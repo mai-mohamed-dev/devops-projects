@@ -1,0 +1,76 @@
+
+Vagrant.configure("2") do |config|
+   config.vm.box = "centos/stream9"
+  config.hostmanager.enabled = true
+  config.hostmanager.manage_host = true
+
+  # VirtualBox Provider Configuration
+  # DB vm
+  config.vm.define "db" do |db|
+    db.vm.hostname = "db"
+    db.vm.box = "eurolinux-vagrant/centos-stream-9"
+    db.vm.box_version = "9.0.43"
+    db.vm.network "private_network", ip: "192.168.56.15"
+    db.vm.provision "shell", path: "db_provision.sh"
+    db.vm.provider "virtualbox" do |vb|
+     vb.name = "db-centos-9"
+     vb.memory = "2048"
+   end
+
+  end
+
+  # DB Caching: Memcache vm 
+  config.vm.define "memcache" do |memcache|
+    memcache.vm.hostname = "memcache"
+    memcache.vm.box = "eurolinux-vagrant/centos-stream-9"
+    memcache.vm.box_version = "9.0.43"
+    memcache.vm.network "private_network", ip: "192.168.56.14"
+    memcache.vm.provision "shell", path: "memcache_provision.sh"
+    memcache.vm.provider "virtualbox" do |vb|
+     vb.name = "memcache-centos-9"
+     vb.memory = "1024"
+   end
+
+  end
+
+# Broker/Queuing Agent: RabbitMQ vm 
+  config.vm.define "rabbitmq" do |rabbitmq|
+    rabbitmq.vm.hostname = "rabbitmq"
+    rabbitmq.vm.box = "eurolinux-vagrant/centos-stream-9"
+    rabbitmq.vm.box_version = "9.0.43"
+    rabbitmq.vm.network "private_network", ip: "192.168.56.13"
+    rabbitmq.vm.provision "shell", path: "rabbitmq_provision.sh"
+    rabbitmq.vm.provider "virtualbox" do |vb|
+     vb.name = "rabbitmq-centos-9"
+     vb.memory = "1024"
+   end
+
+  end
+# Application Server: TomCat vm 
+  config.vm.define "tomcat" do |tomcat|
+    tomcat.vm.hostname = "tomcat"
+    tomcat.vm.box = "eurolinux-vagrant/centos-stream-9"
+    tomcat.vm.box_version = "9.0.43"
+    tomcat.vm.network "private_network", ip: "192.168.56.12"
+    tomcat.vm.provision "shell", path: "tomcat_provision.sh"
+    tomcat.vm.synced_folder "./app_src", "/opt/java-app"
+    tomcat.vm.provider "virtualbox" do |vb|
+     vb.name = "tomcat-centos-9"
+     vb.memory = "2048"
+   end
+
+  end
+# Web Service: Nginx vm 
+  config.vm.define "nginx" do |nginx|
+    nginx.vm.hostname = "nginx"
+    nginx.vm.box = "eurolinux-vagrant/centos-stream-9"
+    nginx.vm.box_version = "9.0.43"
+    nginx.vm.network "private_network", ip: "192.168.56.11"
+    nginx.vm.provision "shell", path: "nginx_provision.sh"
+    nginx.vm.provider "virtualbox" do |vb|
+     vb.name = "nginx-centos-9"
+     vb.memory = "1024"
+   end
+
+  end
+end
