@@ -114,7 +114,7 @@ vagrant destroy -f            # delete everything
 1. `vagrant up` creates each VM from the same pinned box, with its own IP and memory.
 2. The hostmanager plugin writes every VM's name and IP into each VM's `/etc/hosts` (and your host's), so services connect by name.
 3. One shell provisioner per VM installs and configures only that tier.
-4. `app_src/` on your computer is shared into the Tomcat VM at `/opt/java-app`.
+4. `app_src/` on your computer is shared into the Tomcat VM at `/vagrant`.
 5. Tomcat connects to the database, cache, and queue by their private addresses.
 6. Nginx proxies requests to Tomcat.
 
@@ -147,14 +147,6 @@ nc -zv rabbitmq 5672
 ```
 
 Finish with a full rebuild test: `vagrant destroy -f` then `vagrant up` should give the same working result.
-
-## ✅ Result
-- All five tiers built and configured by one command
-- Application reachable through Nginx
-- Full environment rebuilt from scratch in `<N>` minutes
-
-![Application running](docs/images/app.png)
-![vagrant status](docs/images/vagrant-status.png)
 
 
 ## 📄 License
