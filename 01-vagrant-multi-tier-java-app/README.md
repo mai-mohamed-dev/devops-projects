@@ -148,14 +148,6 @@ nc -zv rabbitmq 5672
 
 Finish with a full rebuild test: `vagrant destroy -f` then `vagrant up` should give the same working result.
 
-## ✅ Result
-- All five tiers built and configured by one command
-- Application reachable through Nginx
-- Full environment rebuilt from scratch in `<N>` minutes
-
-![Application running](docs/images/app.png)
-![vagrant status](docs/images/vagrant-status.png)
-
 
 ## 📄 License
 [MIT](../LICENSE)
