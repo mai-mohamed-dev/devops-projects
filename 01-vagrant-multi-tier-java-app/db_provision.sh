@@ -52,8 +52,8 @@ sudo mysql -u root -p${DB_ROOT_PASS} accounts < src/main/resources/db_backup.sql
 
 sudo systemctl restart mariadb
 
-sudo systemctl start firewalld
-sudo systemctl enable firewalld
+#sudo systemctl start firewalld
+sudo systemctl disable firewalld
 sudo firewall-cmd --zone=public --add-port=3306/tcp --permanent
 sudo firewall-cmd --reload
 sudo systemctl restart mariadb
