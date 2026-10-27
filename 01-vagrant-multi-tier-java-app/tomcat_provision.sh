@@ -6,15 +6,17 @@ sudo dnf install epel-release -y
 
 sudo dnf -y install java-11-openjdk java-11-openjdk-devel
 sudo dnf install git wget unzip zip -y
-
+sudo dnf install git maven wget -y
 
 cd /tmp/
-sudo wget "https://archive.apache.org/dist/tomcat/tomcat-10/v10.0.0/bin/apache-tomcat-10.0.0.tar.gz"
-sudo tar xzvf apache-tomcat-10.0.0.tar.gz
+sudo wget "https://archive.apache.org/dist/tomcat/tomcat-9/v9.0.75/bin/apache-tomcat-9.0.75.tar.gz"
+sudo tar xzvf apache-tomcat-9.0.75.tar.gz
 sudo useradd --home-dir /usr/local/tomcat --shell /sbin/nologin tomcat
-sudo cp -r /tmp/tomcatbin/* /usr/local/tomcat/
+sudo cp -r /tmp/apache-tomcat-9.0.75/* /usr/local/tomcat/
+
 
 sudo chown -R tomcat.tomcat /usr/local/tomcat
+sudo chmod +x /usr/local/tomcat/bin/*.sh
 
 sudo rm -rf /etc/systemd/system/tomcat.service
 
@@ -22,19 +24,21 @@ sudo cat <<'EOF'>> /etc/systemd/system/tomcat.service
 [Unit]
 Description=Apache Tomcat Web Application Container
 After=network.target
+
 [Service]
+Type=simple
 User=tomcat
 Group=tomcat
 WorkingDirectory=/usr/local/tomcat
-#Environment=JRE_HOME=/usr/lib/jvm/jre
-Environment=JAVA_HOME=/usr/lib/jvm/jre
-Environment=CATALINA_PID=/var/tomcat/%i/run/tomcat.pid
-Environment=CATALINA_HOME=/usr/local/tomcat
-Environment=CATALINE_BASE=/usr/local/tomcat
+Environment="JAVA_HOME=/usr/lib/jvm/java-11-openjdk"
+Environment="CATALINA_PID=/usr/local/tomcat/temp/tomcat.pid"
+Environment="CATALINA_HOME=/usr/local/tomcat"
+Environment="CATALINA_BASE=/usr/local/tomcat"
 ExecStart=/usr/local/tomcat/bin/catalina.sh run
 ExecStop=/usr/local/tomcat/bin/shutdown.sh
 RestartSec=10
 Restart=always
+
 [Install]
 WantedBy=multi-user.target
 EOF
@@ -52,6 +56,8 @@ cd /tmp/
 sudo wget https://archive.apache.org/dist/maven/maven-3/3.9.9/binaries/apache-maven-3.9.9-bin.zip
 sudo unzip apache-maven-3.9.9-bin.zip
 sudo cp -r apache-maven-3.9.9 /usr/local/maven3.9
+sudo chown tomcat.tomcat /usr/local/maven3.9 -R
+sudo ln -sf /usr/local/maven3.9/bin/mvn /usr/bin/mvn
 
 sudo mkdir -p $SRC_DIR
 sudo chmod -R 755 $SRC_DIR

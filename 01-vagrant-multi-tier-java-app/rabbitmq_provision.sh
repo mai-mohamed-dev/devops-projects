@@ -12,6 +12,7 @@ sudo systemctl enable --now rabbitmq-server
 sudo sh -c 'echo "[{rabbit, [{loopback_users, []}]}]." > /etc/rabbitmq/rabbitmq.config'
 sudo rabbitmqctl add_user test test
 sudo rabbitmqctl set_user_tags test administrator
+sudo rabbitmqctl set_permissions -p "/" test ".*" ".*" ".*"
 sudo systemctl restart rabbitmq-server
 
 sudo systemctl start firewalld
