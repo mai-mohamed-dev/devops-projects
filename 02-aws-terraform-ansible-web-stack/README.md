@@ -39,7 +39,7 @@ Terraform provisions the network, security rules, load balancer and four Linux s
 
 | Area | Resources |
 |---|---|
-| **Network** | `aws_vpc.main` (10.0.0.0/16), public subnet 10.0.1.0/24, second public subnet 10.0.3.0/24 (for the ALB, in another AZ), private subnet 10.0.2.0/24 |
+| **Network** | `aws_vpc.main`, public subnet, second public subnet (for the ALB, in another AZ), private subnet |
 | **Routing** | Internet Gateway, public and private route tables with associations, Elastic IP and NAT Gateway, private default route through the NAT |
 | **Security groups** | `public-tier-sg` (ALB), `app-tier-sg`, `db-tier-sg`, `rabbitmq-tier-sg`, `memcached-tier-sg` |
 | **Load balancing** | Application Load Balancer, HTTP listener on port 80, target group with health checks, app instance registered as target |
@@ -51,14 +51,14 @@ Terraform provisions the network, security rules, load balancer and four Linux s
 ```mermaid
 flowchart LR
     NET([Internet]) -->|80, 443| ALB["public-tier-sg<br/>Load balancer"]
-    ADMIN([Admin IP]) -->|22| APP
+    ADMIN([Admin IP]) -->|| APP
     ALB -->|80| APP["app-tier-sg<br/>App server"]
     APP -->|3306| DB["db-tier-sg<br/>MariaDB"]
     APP -->|5672| MQ["rabbitmq-tier-sg<br/>RabbitMQ"]
     APP -->|11211| MC["memcached-tier-sg<br/>Memcached"]
-    APP -. "22 (jump host)" .-> DB
-    APP -. "22 (jump host)" .-> MQ
-    APP -. "22 (jump host)" .-> MC
+    APP -. " (jump host)" .-> DB
+    APP -. " (jump host)" .-> MQ
+    APP -. " (jump host)" .-> MC
 ```
 
 - **Least privilege:** each backend accepts traffic only from the app server's security group, never from CIDR ranges.
