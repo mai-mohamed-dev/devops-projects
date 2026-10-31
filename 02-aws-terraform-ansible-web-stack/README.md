@@ -47,20 +47,6 @@ Terraform provisions the network, security rules, load balancer and four Linux s
 | **Access** | EC2 key pair, SSH to the app server from the admin IP only, private servers reachable only through the app server |
 
 ## Security model
-
-```mermaid
-flowchart LR
-    NET([Internet]) -->|80, 443| ALB["public-tier-sg<br/>Load balancer"]
-    ADMIN([Admin IP]) -->|| APP
-    ALB -->|80| APP["app-tier-sg<br/>App server"]
-    APP -->|3306| DB["db-tier-sg<br/>MariaDB"]
-    APP -->|5672| MQ["rabbitmq-tier-sg<br/>RabbitMQ"]
-    APP -->|11211| MC["memcached-tier-sg<br/>Memcached"]
-    APP -. " (jump host)" .-> DB
-    APP -. " (jump host)" .-> MQ
-    APP -. " (jump host)" .-> MC
-```
-
 - **Least privilege:** each backend accepts traffic only from the app server's security group, never from CIDR ranges.
 - **Private by default:** database, broker and cache have no public IP and sit in the private subnet.
 - **Restricted administration:** SSH reaches the app server only from `admin_cidr`. The private servers are reached through it (jump host).
