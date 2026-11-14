@@ -1,0 +1,375 @@
+---
+# ---- Packages: Nginx, Git, JDK, Maven, Tomcat + client tools used for verification ----
+- name: Install Nginx, Git, JDK, Maven, Tomcat and tools
+  ansible.builtin.apt:
+    lock_timeout: 300
+    name:
+      - nginx
+      - git
+      - "{{ java_package }}"
+      - maven
+      - "{{ tomcat_package }}"
+      - mariadb-client
+      - netcat-openbsd
+      - python3-pika
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+# ---- Build user and directories ----
+- name: Create build system user
+  ansible.builtin.user:
+    name: "{{ app_user }}"
+    system: true
+    shell: /usr/sbin/nologin
+    home: "{{ app_dir }}"
+    create_home: false
+
+- name: Create application directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ app_user }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: "{{ app_dir }}", owner: "{{ app_user }}", mode: "0750" }
+    - { path: "{{ app_src_dir }}", owner: "{{ app_user }}", mode: "0750" }
+    - { path: /etc/webapp, owner: root, mode: "0750" }
+
+# ---- Application configuration (backend endpoints + credentials) ----
+- name: Render application.properties (MariaDB, RabbitMQ, Memcached settings)
+  ansible.builtin.copy:
+    content: |
+      # Managed by Ansible - copied into the source tree just before each Maven build
+      jdbc.driverClassName=com.mysql.jdbc.Driver
+      jdbc.url=jdbc:mysql://{{ db_host }}:{{ db_port }}/{{ db_name }}?useUnicode=true&characterEncoding=UTF-8&zeroDateTimeBehavior=convertToNull&useSSL=false
+      jdbc.username={{ db_user }}
+      jdbc.password={{ db_password }}
+      memcached.active.host={{ memcached_host }}
+      memcached.active.port={{ memcached_port }}
+      memcached.standBy.host={{ memcached_host }}
+      memcached.standBy.port={{ memcached_port }}
+      rabbitmq.address={{ rabbitmq_host }}
+      rabbitmq.port={{ rabbitmq_port }}
+      rabbitmq.username={{ rabbitmq_user }}
+      rabbitmq.password={{ rabbitmq_password }}
+      # Elasticsearch is not part of the requested four-server architecture.
+      elasticsearch.host=127.0.0.1
+      elasticsearch.port=9300
+      elasticsearch.cluster=vprofile
+      elasticsearch.node=vprofilenode
+    dest: /etc/webapp/application.properties
+    owner: root
+    group: "{{ app_user }}"
+    mode: "0640"
+  no_log: true
+
+- name: Fingerprint the rendered configuration
+  ansible.builtin.stat:
+    path: /etc/webapp/application.properties
+    checksum_algorithm: sha256
+  register: props_stat
+
+# ---- Tomcat configuration ----
+- name: Bind Tomcat's HTTP connector to loopback only (Nginx is the public entry)
+  ansible.builtin.replace:
+    path: "{{ tomcat_conf_dir }}/server.xml"
+    regexp: '<Connector port="8080" protocol="HTTP/1.1"(?! address=)'
+    replace: '<Connector port="8080" protocol="HTTP/1.1" address="127.0.0.1"'
+  register: tomcat_server_xml
+
+- name: Configure Tomcat JVM options and application environment
+  ansible.builtin.copy:
+    content: |
+      # Managed by Ansible
+      JAVA_HOME={{ java_home }}
+      JAVA_OPTS="-Djava.awt.headless=true -Xms128m -Xmx{{ tomcat_heap_mb }}m -DDB_HOST={{ db_host }} -DDB_PORT={{ db_port }} -DRABBITMQ_HOST={{ rabbitmq_host }} -DRABBITMQ_PORT={{ rabbitmq_port }} -DMEMCACHED_HOST={{ memcached_host }} -DMEMCACHED_PORT={{ memcached_port }}"
+    dest: "/etc/default/{{ tomcat_service }}"
+    owner: root
+    group: root
+    mode: "0644"
+  register: tomcat_env
+
+# ---- Get the code from GitHub (pinned revision) ----
+- name: Clone / update the application source from GitHub
+  ansible.builtin.git:
+    repo: "{{ app_repo_url }}"
+    dest: "{{ app_src_dir }}"
+    version: "{{ app_repo_version }}"
+    accept_hostkey: true
+    force: true
+  become_user: "{{ app_user }}"
+  register: repo
+
+# ---- Load the database schema once, only into an empty schema ----
+- name: Count existing tables in the application schema
+  ansible.builtin.command:
+    argv: [mysql, -N, -h, "{{ db_host }}", -P, "{{ db_port | string }}", -u, "{{ db_user }}",
+           -D, "{{ db_name }}", -e,
+           "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = '{{ db_name }}'"]
+  environment:
+    MYSQL_PWD: "{{ db_password }}"
+  register: schema_count
+  changed_when: false
+  no_log: true
+  when: app_sql_file | length > 0
+
+- name: Import the initial database dump (never over an existing schema)
+  ansible.builtin.shell: "mysql -h {{ db_host }} -P {{ db_port }} -u {{ db_user }} {{ db_name }} < {{ app_src_dir }}/{{ app_sql_file }}"
+  environment:
+    MYSQL_PWD: "{{ db_password }}"
+  no_log: true
+  when:
+    - app_sql_file | length > 0
+    - schema_count.stdout | trim == '0'
+
+- name: Count the required tables
+  ansible.builtin.command:
+    argv: [mysql, -N, -h, "{{ db_host }}", -P, "{{ db_port | string }}", -u, "{{ db_user }}",
+           -D, "{{ db_name }}", -e,
+           "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = '{{ db_name }}' AND table_name IN ({{ app_required_tables_sql }})"]
+  environment:
+    MYSQL_PWD: "{{ db_password }}"
+  register: required_tables
+  changed_when: false
+  no_log: true
+  when: app_sql_file | length > 0
+
+- name: Fail if the schema is incomplete (automatic re-import is disabled to protect data)
+  ansible.builtin.assert:
+    that: required_tables.stdout | trim | int == app_required_tables_count | int
+    fail_msg: "Incomplete {{ db_name }} schema. Back it up and inspect it manually."
+  when: app_sql_file | length > 0
+
+# ---- Build only when the code or the configuration changed (idempotent) ----
+- name: Read the last deployed build stamp
+  ansible.builtin.slurp:
+    src: "{{ app_dir }}/.build-stamp"
+  register: build_stamp_old
+  failed_when: false
+
+- name: Decide whether a (re)build is needed
+  ansible.builtin.set_fact:
+    app_build_stamp: "{{ repo.after }}:{{ props_stat.stat.checksum }}"
+    app_needs_build: "{{ (build_stamp_old.content | default('') | b64decode | trim) != (repo.after ~ ':' ~ props_stat.stat.checksum) }}"
+
+- name: Build and deploy the WAR
+  when: app_needs_build | bool
+  block:
+    - name: Put the rendered application.properties into the source tree
+      ansible.builtin.copy:
+        src: /etc/webapp/application.properties
+        dest: "{{ app_src_dir }}/{{ app_properties_file }}"
+        remote_src: true
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: "0640"
+      no_log: true
+
+    - name: Build the WAR with Maven
+      ansible.builtin.command: mvn -B -ntp clean package -DskipTests
+      args:
+        chdir: "{{ app_src_dir }}"
+      environment:
+        JAVA_HOME: "{{ java_home }}"
+        MAVEN_OPTS: "-Xmx768m"
+      become_user: "{{ app_user }}"
+
+    - name: Restore the tracked properties file (keeps the checkout clean)
+      ansible.builtin.command: git checkout -- {{ app_properties_file }}
+      args:
+        chdir: "{{ app_src_dir }}"
+      become_user: "{{ app_user }}"
+
+    - name: Locate the built WAR
+      ansible.builtin.find:
+        paths: "{{ app_src_dir }}/target"
+        patterns: "*.war"
+      register: built_war
+      failed_when: built_war.files | length == 0
+
+    - name: Stop Tomcat before deploying
+      ansible.builtin.systemd:
+        name: "{{ tomcat_service }}"
+        state: stopped
+
+    - name: Remove the previous deployment
+      ansible.builtin.file:
+        path: "{{ tomcat_webapps }}/ROOT"
+        state: absent
+
+    - name: Deploy the WAR as ROOT.war
+      ansible.builtin.copy:
+        src: "{{ built_war.files[0].path }}"
+        dest: "{{ tomcat_webapps }}/ROOT.war"
+        remote_src: true
+        owner: tomcat
+        group: tomcat
+        mode: "0640"
+
+    - name: Record the deployed build stamp
+      ansible.builtin.copy:
+        dest: "{{ app_dir }}/.build-stamp"
+        content: "{{ app_build_stamp }}"
+        owner: root
+        group: root
+        mode: "0644"
+
+# ---- Nginx reverse proxy ----
+- name: Remove default Nginx site
+  ansible.builtin.file:
+    path: /etc/nginx/sites-enabled/default
+    state: absent
+  register: nginx_site
+
+- name: Configure Nginx reverse proxy
+  ansible.builtin.copy:
+    content: |
+      # Managed by Ansible - reverse proxy: ALB -> Nginx -> Tomcat
+      upstream tomcat_backend {
+          server 127.0.0.1:{{ app_internal_port }};
+          keepalive 16;
+      }
+
+      server {
+          listen {{ app_port }} default_server;
+          server_name _;
+          server_tokens off;
+          client_max_body_size 10m;
+
+          location / {
+              proxy_pass http://tomcat_backend;
+              proxy_http_version 1.1;
+              proxy_set_header Connection "";
+              proxy_set_header Host $host;
+              proxy_set_header X-Real-IP $remote_addr;
+              proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+              proxy_set_header X-Forwarded-Proto $scheme;
+              proxy_connect_timeout 5s;
+              proxy_read_timeout 90s;
+          }
+      }
+    dest: /etc/nginx/conf.d/webapp.conf
+    owner: root
+    group: root
+    mode: "0644"
+  register: nginx_conf
+
+- name: Validate Nginx configuration
+  ansible.builtin.command: nginx -t
+  changed_when: false
+
+# ---- Firewall: HTTP only from inside the VPC (ALB); Tomcat is loopback-only ----
+- name: UFW - allow HTTP from the VPC (ALB)
+  community.general.ufw:
+    rule: allow
+    src: "{{ vpc_cidr }}"
+    port: "{{ app_port | string }}"
+    proto: tcp
+    comment: HTTP from ALB
+
+# ---- Enable and start services ----
+- name: Enable and start Tomcat and Nginx
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop: ["{{ tomcat_service }}", nginx]
+
+- name: Restart Tomcat when its configuration changed (a fresh deploy already restarted it)
+  ansible.builtin.systemd:
+    name: "{{ tomcat_service }}"
+    state: restarted
+  when: (tomcat_server_xml.changed or tomcat_env.changed) and not (app_needs_build | bool)
+
+- name: Restart Nginx when its configuration changed
+  ansible.builtin.systemd:
+    name: nginx
+    state: restarted
+  when: nginx_site.changed or nginx_conf.changed
+
+# ---- Verification: every backend is exercised from the app server ----
+- name: MariaDB - write and read back a row from the app server
+  ansible.builtin.command:
+    argv:
+      - mysql
+      - -N
+      - -h
+      - "{{ db_host }}"
+      - -P
+      - "{{ db_port | string }}"
+      - -u
+      - "{{ db_user }}"
+      - -D
+      - "{{ db_name }}"
+      - -e
+      - "CREATE TABLE IF NOT EXISTS ansible_healthcheck (id INT PRIMARY KEY, v VARCHAR(16)); REPLACE INTO ansible_healthcheck VALUES (1, 'db-ok'); SELECT v FROM ansible_healthcheck WHERE id = 1; DROP TABLE ansible_healthcheck;"
+  environment:
+    MYSQL_PWD: "{{ db_password }}"
+  register: db_rw
+  changed_when: false
+  failed_when: "'db-ok' not in db_rw.stdout"
+  no_log: true
+
+- name: RabbitMQ - publish and consume a test message from the app server
+  ansible.builtin.shell: |
+    python3 - <<'PY'
+    import os, time, uuid
+    import pika
+    params = pika.ConnectionParameters(
+        os.environ["H"], int(os.environ["P"]), os.environ["V"],
+        pika.PlainCredentials(os.environ["U"], os.environ["W"]), socket_timeout=5)
+    conn = pika.BlockingConnection(params)
+    ch = conn.channel()
+    q = "ansible.healthcheck"
+    ch.queue_declare(queue=q, auto_delete=True)
+    body = uuid.uuid4().hex
+    ch.basic_publish("", q, body)
+    got = None
+    for _ in range(20):
+        method, props, data = ch.basic_get(q, auto_ack=True)
+        if method:
+            got = data.decode()
+            break
+        time.sleep(0.3)
+    ch.queue_delete(q)
+    conn.close()
+    assert got == body, "message was not consumed"
+    print("rabbitmq-ok")
+    PY
+  args:
+    executable: /bin/bash
+  environment:
+    H: "{{ rabbitmq_host }}"
+    P: "{{ rabbitmq_port | string }}"
+    V: "{{ rabbitmq_vhost }}"
+    U: "{{ rabbitmq_user }}"
+    W: "{{ rabbitmq_password }}"
+  register: mq_rw
+  changed_when: false
+  failed_when: "'rabbitmq-ok' not in mq_rw.stdout"
+  no_log: true
+
+- name: Memcached - store and retrieve a value from the app server
+  ansible.builtin.shell: set -o pipefail; printf 'set ansible_hc 0 60 8\r\ncache-ok\r\nget ansible_hc\r\ndelete ansible_hc\r\n' | nc -w 2 {{ memcached_host }} {{ memcached_port }}
+  args:
+    executable: /bin/bash
+  register: mc_rw
+  changed_when: false
+  failed_when: "'STORED' not in mc_rw.stdout or 'cache-ok' not in mc_rw.stdout"
+
+- name: Tomcat answers on loopback
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ app_internal_port }}"
+    timeout: 180
+
+- name: HTTP - application reachable through Nginx
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ app_port }}/"
+    status_code: 200
+  register: http_root
+  retries: 36
+  delay: 5
+  until: http_root.status == 200

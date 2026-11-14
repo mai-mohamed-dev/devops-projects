@@ -1,0 +1,23 @@
+# Dynamic inventory: ansible-playbook -i inventory_aws_ec2.yml manage_infra.yml
+# Needs: ansible-galaxy collection install amazon.aws ; pip install boto3 botocore
+# AWS credentials come from the environment / ~/.aws / instance profile (never from this file).
+plugin: amazon.aws.aws_ec2
+regions:
+  - eu-north-1
+filters:
+  instance-state-name: running
+  tag:Name:
+    - app-instance-*
+    - db-instance-*
+    - mq-instance-*
+    - mem-instance-*
+hostnames:
+  - tag:Name
+compose:
+  # App host is reached on its public IP; the private tier on private IPs (through the app jump host)
+  ansible_host: public_ip_address if tags.Name.startswith('app-') else private_ip_address
+groups:
+  app:       tags.Name.startswith('app-')
+  mariadb:   tags.Name.startswith('db-')
+  rabbitmq:  tags.Name.startswith('mq-')
+  memcached: tags.Name.startswith('mem-')

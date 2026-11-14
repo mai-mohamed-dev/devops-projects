@@ -7,8 +7,10 @@ terraform {
   }
 }
 
+
 provider "aws" {
   region = "eu-north-1"
-  access_key = "my-access-key"
-  secret_key = "my-secret-key"
+  default_tags {
+    tags = { Project = "vprofile-lab", Environment = "lab", ManagedBy = "Terraform" }
+  }
 }

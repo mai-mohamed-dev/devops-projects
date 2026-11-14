@@ -1,0 +1,91 @@
+---
+- name: Install MariaDB server, client and PyMySQL (for Ansible modules)
+  ansible.builtin.apt:
+    lock_timeout: 300
+    name: [mariadb-server, mariadb-client, python3-pymysql]
+    state: present
+
+- name: Configure MariaDB to listen on the private interface only
+  ansible.builtin.copy:
+    content: |
+      # Managed by Ansible
+      [mysqld]
+      bind-address            = {{ ansible_default_ipv4.address }}
+      port                    = {{ db_port }}
+      character-set-server    = utf8mb4
+      collation-server        = utf8mb4_unicode_ci
+      skip-name-resolve
+      local-infile            = 0
+      max_connections         = {{ mariadb_max_connections }}
+      innodb_buffer_pool_size = {{ mariadb_innodb_buffer_pool_size }}
+    dest: /etc/mysql/mariadb.conf.d/99-custom.cnf
+    owner: root
+    group: root
+    mode: "0644"
+  register: mariadb_conf
+
+- name: Enable and start MariaDB
+  ansible.builtin.systemd:
+    name: mariadb
+    enabled: true
+    state: started
+
+- name: Restart MariaDB when its configuration changed
+  ansible.builtin.systemd:
+    name: mariadb
+    state: restarted
+  when: mariadb_conf.changed
+
+- name: Wait for MariaDB on the private IP
+  ansible.builtin.wait_for:
+    host: "{{ ansible_default_ipv4.address }}"
+    port: "{{ db_port }}"
+    timeout: 60
+
+# root stays on unix_socket auth (no remote root, no root password to leak)
+- name: Remove anonymous users
+  community.mysql.mysql_user:
+    name: ""
+    host_all: true
+    state: absent
+    login_unix_socket: "{{ mariadb_socket }}"
+
+- name: Remove test database
+  community.mysql.mysql_db:
+    name: test
+    state: absent
+    login_unix_socket: "{{ mariadb_socket }}"
+
+- name: Create application database
+  community.mysql.mysql_db:
+    name: "{{ db_name }}"
+    encoding: utf8mb4
+    collation: utf8mb4_unicode_ci
+    state: present
+    login_unix_socket: "{{ mariadb_socket }}"
+
+- name: Create dedicated application user (only from the app subnet)
+  community.mysql.mysql_user:
+    name: "{{ db_user }}"
+    host: "{{ db_app_host_pattern }}"
+    password: "{{ db_password }}"
+    priv: "{{ mariadb_app_privileges }}"
+    state: present
+    login_unix_socket: "{{ mariadb_socket }}"
+  no_log: true
+
+- name: UFW - allow MariaDB only from the app subnet
+  community.general.ufw:
+    rule: allow
+    src: "{{ app_subnet_cidr }}"
+    port: "{{ db_port | string }}"
+    proto: tcp
+    comment: MariaDB from app subnet
+
+- name: Verify TCP connectivity to MariaDB from the Application Server
+  ansible.builtin.wait_for:
+    host: "{{ ansible_default_ipv4.address }}"
+    port: "{{ db_port }}"
+    timeout: 30
+  delegate_to: "{{ groups['app'][0] }}"
+  become: false

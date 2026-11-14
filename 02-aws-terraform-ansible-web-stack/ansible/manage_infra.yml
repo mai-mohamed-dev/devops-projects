@@ -1,0 +1,78 @@
+---
+# Main playbook: orchestrates the whole stack.
+#   ansible-playbook manage_infra.yml --ask-vault-pass   (secrets live in vault.yml)
+#   ansible-playbook manage_infra.yml --tags mariadb
+# Order matters: OS baseline -> backend tiers -> app (which verifies all backends).
+
+- name: Apply Baseline Configuration and Security Hardening to All Instances
+  hosts: all
+  become: true
+  gather_facts: true
+  pre_tasks:
+    - name: Wait for SSH (new instances may still be booting)
+      ansible.builtin.wait_for_connection:
+        timeout: 600
+      tags: [always]
+
+    - name: Wait for cloud-init to finish first-boot work (avoids apt lock races)
+      ansible.builtin.command: cloud-init status --wait
+      register: cloud_init
+      changed_when: false
+      failed_when: cloud_init.rc not in [0, 2]
+      tags: [always]
+
+    - name: Gather facts
+      ansible.builtin.setup:
+      tags: [always]
+  roles:
+    - { role: common, tags: [common] }
+
+- name: Configure MariaDB Database Tier
+  hosts: mariadb
+  become: true
+  roles:
+    - { role: mariadb, tags: [mariadb] }
+  
+- name: Configure RabbitMQ Message Broker Tier
+  hosts: rabbitmq
+  become: true
+  roles:
+    - { role: rabbitmq, tags: [rabbitmq] }
+
+- name: Configure Memcached Caching Tier
+  hosts: memcached
+  become: true
+  roles:
+    - { role: memcached, tags: [memcached] }
+  
+- name: Configure Application Server and Nginx Reverse Proxy
+  hosts: app
+  become: true
+  roles:
+    - { role: app, tags: [app] }
+  
+- name: End-to-end check through the Application Load Balancer
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tags: [verify, alb]
+  vars:
+    ansible_python_interpreter: "{{ ansible_playbook_python }}"
+  tasks:
+    - name: Check the app through the ALB public DNS name
+      ansible.builtin.uri:
+        url: "http://{{ alb_dns_name }}/"
+        return_content: true
+        timeout: 20
+      register: alb_check
+      retries: 12
+      delay: 10
+      until: alb_check.status == 200
+      when: alb_dns_name | default('') | length > 0
+
+    - name: Hint when ALB name was not supplied
+      ansible.builtin.debug:
+        msg: "Skipped ALB check. Run with -e alb_dns_name=$(terraform output -raw alb_dns_name)"
+      when: alb_dns_name | default('') | length == 0
+    
+...

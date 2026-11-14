@@ -1,0 +1,74 @@
+---
+- name: Install RabbitMQ server (pulls in Erlang)
+  ansible.builtin.apt:
+    lock_timeout: 300
+    name: rabbitmq-server
+    state: present
+
+- name: Configure RabbitMQ listener (private interface only, management UI not enabled)
+  ansible.builtin.copy:
+    content: |
+      # Managed by Ansible
+      listeners.tcp.1 = {{ ansible_default_ipv4.address }}:{{ rabbitmq_port }}
+      loopback_users.guest = true
+    dest: /etc/rabbitmq/rabbitmq.conf
+    owner: root
+    group: rabbitmq
+    mode: "0640"
+  register: rabbit_conf
+
+- name: Enable and start RabbitMQ
+  ansible.builtin.systemd:
+    name: rabbitmq-server
+    enabled: true
+    state: started
+
+- name: Restart RabbitMQ when its configuration changed
+  ansible.builtin.systemd:
+    name: rabbitmq-server
+    state: restarted
+  when: rabbit_conf.changed
+
+- name: Wait until the broker is fully started
+  ansible.builtin.command: rabbitmqctl await_startup --timeout 90
+  changed_when: false
+
+- name: Create application virtual host
+  community.rabbitmq.rabbitmq_vhost:
+    name: "{{ rabbitmq_vhost }}"
+    state: present
+
+- name: Create application user with permissions on its vhost
+  community.rabbitmq.rabbitmq_user:
+    user: "{{ rabbitmq_user }}"
+    password: "{{ rabbitmq_password }}"
+    update_password: always
+    tags: ""
+    permissions:
+      - vhost: "{{ rabbitmq_vhost }}"
+        configure_priv: ".*"
+        read_priv: ".*"
+        write_priv: ".*"
+    state: present
+  no_log: true
+
+- name: Remove the default guest user
+  community.rabbitmq.rabbitmq_user:
+    user: guest
+    state: absent
+
+- name: UFW - allow AMQP only from the app subnet
+  community.general.ufw:
+    rule: allow
+    src: "{{ app_subnet_cidr }}"
+    port: "{{ rabbitmq_port | string }}"
+    proto: tcp
+    comment: AMQP from app subnet
+
+- name: Verify TCP connectivity to RabbitMQ from the Application Server
+  ansible.builtin.wait_for:
+    host: "{{ ansible_default_ipv4.address }}"
+    port: "{{ rabbitmq_port }}"
+    timeout: 30
+  delegate_to: "{{ groups['app'][0] }}"
+  become: false

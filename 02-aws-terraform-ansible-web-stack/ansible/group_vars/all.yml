@@ -1,0 +1,96 @@
+---
+# Secure, zero-touch SSH:
+#  - app host      : direct, key keys/admin.pem
+#  - private hosts : key keys/managed.pem, tunnelled through the app host (ProxyCommand)
+ansible_user: ubuntu
+ansible_python_interpreter: /usr/bin/python3
+
+bastion_host: "{{ hostvars[groups['app'][0]]['ansible_host'] | default(groups['app'][0]) }}"
+
+ansible_ssh_private_key_file: "{{ playbook_dir }}/keys/{{ 'admin' if 'app' in group_names else 'managed' }}.pem"
+
+ansible_ssh_common_args: >-
+  {{ '' if 'app' in group_names else
+  '-o ProxyCommand="ssh -W %h:%p -q -i ' ~ playbook_dir ~ '/keys/admin.pem -o StrictHostKeyChecking=accept-new ubuntu@' ~ bastion_host ~ '"' }}
+
+# ---------- Network ----------
+vpc_cidr: 10.0.0.0/16
+app_subnet_cidr: 10.0.1.0/24          # public subnet where the app server lives
+db_app_host_pattern: "{{ hostvars[groups['app'][0]].ansible_default_ipv4.address }}"      # MariaDB host pattern allowed for the app user
+
+# ---------- Application ----------
+app_repo_url: "https://github.com/hkhcoder/vprofile-project.git"
+app_repo_version: "main"
+app_jar_name: "vprofile-SNAPSHOT.jar"
+app_name: webapp
+app_user: webapp
+app_dir: /opt/webapp
+app_port: 80                          
+app_internal_port: 8080               
+
+# ---------- MariaDB ----------
+db_name: accounts
+db_user: appuser
+db_port: 3306
+db_password: "{{ vault_db_password }}"
+db_host: "{{ hostvars[groups['mariadb'][0]].ansible_default_ipv4.address }}"
+
+# ---------- RabbitMQ ----------
+rabbitmq_port: 5672
+rabbitmq_vhost: app_vhost
+rabbitmq_user: appuser
+rabbitmq_queue: tasks
+rabbitmq_password: "{{ vault_rabbitmq_password }}"
+rabbitmq_host: "{{ hostvars[groups['rabbitmq'][0]].ansible_default_ipv4.address }}"
+
+# ---------- Memcached ----------
+memcached_port: 11211
+memcached_memory_mb: 256
+memcached_max_connections: 1024
+memcached_host: "{{ hostvars[groups['memcached'][0]].ansible_default_ipv4.address }}"
+
+# ---------- Role settings (formerly roles/*/defaults) ----------
+# common
+common_packages: [curl, git, ufw, fail2ban, unattended-upgrades, chrony, netcat-openbsd, vim, htop, unzip, acl, ca-certificates]
+common_timezone: UTC
+common_ssh_port: 22
+# Reboot after kernel updates. Off by default: the app host is also the SSH jump host.
+common_reboot_if_required: false
+common_services: [ssh, fail2ban, chrony, unattended-upgrades, ufw]
+common_sysctl:
+  net.ipv4.conf.all.rp_filter: 1
+  net.ipv4.conf.default.rp_filter: 1
+  net.ipv4.conf.all.accept_redirects: 0
+  net.ipv4.conf.default.accept_redirects: 0
+  net.ipv6.conf.all.accept_redirects: 0
+  net.ipv4.conf.all.send_redirects: 0
+  net.ipv4.conf.all.accept_source_route: 0
+  net.ipv4.conf.all.log_martians: 1
+  net.ipv4.icmp_echo_ignore_broadcasts: 1
+  net.ipv4.tcp_syncookies: 1
+  kernel.randomize_va_space: 2
+  kernel.kptr_restrict: 2
+  fs.protected_hardlinks: 1
+  fs.protected_symlinks: 1
+  fs.suid_dumpable: 0
+
+# mariadb
+mariadb_max_connections: 200
+mariadb_innodb_buffer_pool_size: 512M
+mariadb_socket: /run/mysqld/mysqld.sock
+mariadb_app_privileges: "{{ db_name }}.*:SELECT,INSERT,UPDATE,DELETE,CREATE,ALTER,INDEX,DROP,REFERENCES,LOCK TABLES"
+
+# app
+app_src_dir: "{{ app_dir }}/src"
+app_properties_file: src/main/resources/application.properties
+app_sql_file: src/main/resources/db_backup.sql     # loaded once into an EMPTY schema ("" = skip)
+app_required_tables_sql: "'user','role','user_role'"   # tables that must exist after the import
+app_required_tables_count: 3
+
+java_package: openjdk-11-jdk-headless
+java_home: "/usr/lib/jvm/java-11-openjdk-{{ 'arm64' if ansible_architecture == 'aarch64' else 'amd64' }}"
+tomcat_package: tomcat9             # Ubuntu 22.04; this project uses javax.* so Tomcat 9, not 10
+tomcat_service: tomcat9
+tomcat_conf_dir: /etc/tomcat9
+tomcat_webapps: /var/lib/tomcat9/webapps
+tomcat_heap_mb: 1024

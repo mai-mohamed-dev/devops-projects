@@ -1,0 +1,53 @@
+---
+- name: Install Memcached
+  ansible.builtin.apt:
+    lock_timeout: 300
+    name: [memcached, libmemcached-tools]
+    state: present
+
+- name: Configure Memcached (private IP only, TCP only, memory limit, port)
+  ansible.builtin.copy:
+    content: |
+      # Managed by Ansible
+      -d
+      logfile /var/log/memcached.log
+      -m {{ memcached_memory_mb }}
+      -p {{ memcached_port }}
+      -u memcache
+      -l {{ ansible_default_ipv4.address }}
+      -c {{ memcached_max_connections }}
+      -U 0
+      -P /var/run/memcached/memcached.pid
+    dest: /etc/memcached.conf
+    owner: root
+    group: root
+    mode: "0644"
+  register: memcached_conf
+
+- name: Enable and start Memcached
+  ansible.builtin.systemd:
+    name: memcached
+    enabled: true
+    state: started
+
+- name: Restart Memcached when its configuration changed
+  ansible.builtin.systemd:
+    name: memcached
+    state: restarted
+  when: memcached_conf.changed
+
+- name: UFW - allow Memcached only from the app subnet
+  community.general.ufw:
+    rule: allow
+    src: "{{ app_subnet_cidr }}"
+    port: "{{ memcached_port | string }}"
+    proto: tcp
+    comment: Memcached from app subnet
+
+- name: Verify TCP connectivity to Memcached from the Application Server
+  ansible.builtin.wait_for:
+    host: "{{ ansible_default_ipv4.address }}"
+    port: "{{ memcached_port }}"
+    timeout: 30
+  delegate_to: "{{ groups['app'][0] }}"
+  become: false

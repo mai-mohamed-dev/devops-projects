@@ -28,10 +28,6 @@ variable "private_cidr"{
     type = string
     description = "private subnet with CIDR block 10.0.2.0/24"
 }
-variable "key_name" {
-    description = "Name of an EXISTING EC2 key pair (for SSH and Ansible)"
-    type        = string
-}
 
 variable "app_port" {
     description = "Port the app instance answers on (Nginx = 80)"

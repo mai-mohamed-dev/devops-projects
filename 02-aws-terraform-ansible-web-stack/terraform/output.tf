@@ -58,7 +58,24 @@ output "memcached_sg_id" {
   value       = aws_security_group.memcached_sg.id
 }
 
+
+
+output "ansible_inventory" {
+  description = "IPs per Ansible group"
+  value = {
+    app       = aws_instance.app.public_ip
+    mariadb   = aws_instance.db.private_ip
+    rabbitmq  = aws_instance.mq.private_ip
+    memcached = aws_instance.mem.private_ip
+  }
+}
+
 output "alb_dns_name" {
   description = "DNS name users open to reach the application"
   value       = aws_lb.app.dns_name
+}
+
+output "website" {
+  description = "Open this URL in a browser"
+  value       = "http://${aws_lb.app.dns_name}"
 }

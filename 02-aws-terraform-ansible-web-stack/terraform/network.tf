@@ -67,10 +67,7 @@ resource "aws_route_table" "public" {
   }
   depends_on = [aws_vpc.main, aws_internet_gateway.igw]
 }
-resource "aws_route_table_association" "public_2" {
-  subnet_id      = aws_subnet.public_2.id
-  route_table_id = aws_route_table.public.id
-}
+
 resource "aws_route_table" "private" {
   vpc_id = aws_vpc.main.id
   route {
@@ -86,6 +83,10 @@ resource "aws_route_table" "private" {
 # Link each route table to its subnet
 resource "aws_route_table_association" "public" {
   subnet_id      = aws_subnet.public.id
+  route_table_id = aws_route_table.public.id
+}
+resource "aws_route_table_association" "public_2" {
+  subnet_id      = aws_subnet.public_2.id
   route_table_id = aws_route_table.public.id
 }
 
@@ -283,7 +284,9 @@ resource "aws_vpc_security_group_egress_rule" "memcached_outbound" {
   cidr_ipv4         = "0.0.0.0/0"
   ip_protocol       = "-1"
 }
-
+#--------------------------------------------
+# Load Balancer Security Group
+#############################
 resource "aws_lb_target_group" "app" {
   name                 = "app-tg"
   port                 = var.app_port
